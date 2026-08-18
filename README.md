@@ -1,2 +1,3 @@
 # DeployTool
-A program used to run when deploying Windows OS.
+
+在部署 Windows OS 时运行的工具
