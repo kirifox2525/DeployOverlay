@@ -1,4 +1,4 @@
-﻿#ifndef WINVER
+#ifndef WINVER
 #define WINVER 0x0501
 #endif
 #ifndef _WIN32_WINNT
@@ -230,6 +230,18 @@ void DrawTextLine(HDC dc, HFONT font, const wchar_t* text, int x, int y, COLORRE
     TextOutW(dc, x, y, text, lstrlenW(text));
 }
 
+void DrawTextVerticallyCentered(HDC dc, HFONT font, const wchar_t* text,
+                                int x, int top, int height, COLORREF color) {
+    HFONT oldFont = static_cast<HFONT>(SelectObject(dc, font));
+    TEXTMETRICW metrics = {};
+    GetTextMetricsW(dc, &metrics);
+    SetTextColor(dc, color);
+    SetBkMode(dc, TRANSPARENT);
+    const int y = top + (height - metrics.tmHeight) / 2;
+    TextOutW(dc, x, y, text, lstrlenW(text));
+    SelectObject(dc, oldFont);
+}
+
 void DrawWrappedText(HDC dc, HFONT font, const wchar_t* text, const RECT& bounds,
                      COLORREF color) {
     SelectObject(dc, font);
@@ -239,18 +251,22 @@ void DrawWrappedText(HDC dc, HFONT font, const wchar_t* text, const RECT& bounds
     DrawTextW(dc, text, -1, &textBounds, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
 }
 
-void DrawProgress(HDC dc, int x, int y, int width, int height, double percent) {
-    HPEN borderPen = CreatePen(PS_SOLID, 3, RGB(242, 242, 242));
+void DrawProgress(HWND window, HDC dc, int x, int y, int width, int height, double percent) {
+    const int borderWidth = max(1, Scale(window, 2));
+    const int radius = max(2, Scale(window, 5));
+    const int inset = max(borderWidth + 1, Scale(window, 3));
+    HPEN borderPen = CreatePen(PS_SOLID, borderWidth, RGB(242, 242, 242));
     HBRUSH emptyBrush = CreateSolidBrush(RGB(62, 62, 62));
     HPEN oldPen = static_cast<HPEN>(SelectObject(dc, borderPen));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(dc, emptyBrush));
-    RoundRect(dc, x, y, x + width, y + height, 6, 6);
+    RoundRect(dc, x, y, x + width, y + height, radius, radius);
 
-    const int innerWidth = width - 8;
+    const int innerWidth = max(0, width - inset * 2);
+    const int innerHeight = max(0, height - inset * 2);
     const int fillWidth = static_cast<int>(innerWidth * percent / 100.0 + 0.5);
-    if (fillWidth > 0) {
+    if (fillWidth > 0 && innerHeight > 0) {
         HBRUSH fillBrush = CreateSolidBrush(RGB(238, 238, 238));
-        RECT fill = { x + 4, y + 4, x + 4 + fillWidth, y + height - 4 };
+        RECT fill = { x + inset, y + inset, x + inset + fillWidth, y + inset + innerHeight };
         FillRect(dc, &fill, fillBrush);
         DeleteObject(fillBrush);
     }
@@ -316,16 +332,19 @@ void PaintWindow(HWND window) {
     const int barWidth = Scale(window, 280);
     const int valueX = Scale(window, 470);
     const int barHeight = Scale(window, 22);
-    const int row1 = Scale(window, 170);
-    const int row2 = Scale(window, 207);
-    const int row3 = Scale(window, 244);
+    const int row1 = Scale(window, 168);
+    const int row2 = Scale(window, 205);
+    const int row3 = Scale(window, 242);
 
-    DrawTextLine(memoryDc, g_state.bodyFont, g_state.text.cpu, labelX, row1, white);
-    DrawTextLine(memoryDc, g_state.bodyFont, g_state.text.ram, labelX, row2, white);
-    DrawTextLine(memoryDc, g_state.bodyFont, g_state.text.disk, labelX, row3, white);
-    DrawProgress(memoryDc, barX, row1 - Scale(window, 2), barWidth, barHeight, g_state.cpuPercent);
-    DrawProgress(memoryDc, barX, row2 - Scale(window, 2), barWidth, barHeight, g_state.ramPercent);
-    DrawProgress(memoryDc, barX, row3 - Scale(window, 2), barWidth, barHeight, g_state.diskPercent);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, g_state.text.cpu,
+                               labelX, row1, barHeight, white);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, g_state.text.ram,
+                               labelX, row2, barHeight, white);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, g_state.text.disk,
+                               labelX, row3, barHeight, white);
+    DrawProgress(window, memoryDc, barX, row1, barWidth, barHeight, g_state.cpuPercent);
+    DrawProgress(window, memoryDc, barX, row2, barWidth, barHeight, g_state.ramPercent);
+    DrawProgress(window, memoryDc, barX, row3, barWidth, barHeight, g_state.diskPercent);
 
     wchar_t cpuText[32] = {};
     wchar_t ramText[64] = {};
@@ -333,9 +352,12 @@ void PaintWindow(HWND window) {
     wsprintfW(cpuText, L"%d %%", static_cast<int>(g_state.cpuPercent + 0.5));
     wsprintfW(diskText, L"%d %%", static_cast<int>(g_state.diskPercent + 0.5));
     swprintf_s(ramText, _countof(ramText), L"%.1f / %.1f GB", g_state.ramUsedGb, g_state.ramTotalGb);
-    DrawTextLine(memoryDc, g_state.bodyFont, cpuText, valueX, row1, white);
-    DrawTextLine(memoryDc, g_state.bodyFont, ramText, valueX, row2, white);
-    DrawTextLine(memoryDc, g_state.bodyFont, diskText, valueX, row3, white);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, cpuText,
+                               valueX, row1, barHeight, white);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, ramText,
+                               valueX, row2, barHeight, white);
+    DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, diskText,
+                               valueX, row3, barHeight, white);
 
     // GDI writes RGB only. Assign per-pixel alpha after drawing: dark panel pixels
     // remain translucent, while text, outlines and filled progress pixels stay opaque.
