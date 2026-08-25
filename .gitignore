@@ -1,0 +1,61 @@
+﻿# Visual Studio workspace and user state
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# C/C++ build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Rr]elease_XP/
+x64/
+x86/
+Win32/
+
+# Compiler and linker intermediates
+*.obj
+*.o
+*.iobj
+*.ipdb
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.lastbuildstate
+*.log
+*.exp
+*.lib
+*.map
+
+# Built executables and libraries
+*.exe
+*.dll
+
+# Visual Studio generated databases/caches
+*.VC.db
+*.VC.opendb
+*.opendb
+*.sdf
+ipch/
+.vscode/
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Windows temporary files
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.orig
+*~
+
+# Keep project audit artifacts under artifacts/ tracked intentionally.
+artifacts/

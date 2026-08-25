@@ -1,0 +1,8 @@
+﻿<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="DeployOverlay/DeployOverlay.vcxproj" Id="2f67b475-a40d-49bc-97c4-ef91e85963b7" />
+</Solution>
+
