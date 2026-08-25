@@ -16,6 +16,8 @@ const wchar_t kWindowClass[] = L"KiriDeployOverlayWindow";
 const wchar_t kWindowTitle[] = L"kiri System Deploy";
 const UINT_PTR kRefreshTimer = 1;
 const UINT kRefreshMs = 1000;
+const int kBaseDpi = 96;
+const int kLayoutPercent = 75;   // Reduce the original design uniformly; DPI scaling remains enabled.
 
 struct Texts {
     const wchar_t* subtitle;
@@ -93,18 +95,22 @@ Texts GetTexts(UiLanguage language) {
     return english;
 }
 
+int LayoutDpi(int dpi) {
+    return MulDiv(dpi, kLayoutPercent, 100);
+}
+
 int Scale(HWND window, int value) {
     HDC dc = GetDC(window);
-    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : kBaseDpi;
     if (dc) ReleaseDC(window, dc);
-    return MulDiv(value, dpi, 96);
+    return MulDiv(value, LayoutDpi(dpi), kBaseDpi);
 }
 
 int ScreenScale(int value) {
     HDC dc = GetDC(NULL);
-    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : kBaseDpi;
     if (dc) ReleaseDC(NULL, dc);
-    return MulDiv(value, dpi, 96);
+    return MulDiv(value, LayoutDpi(dpi), kBaseDpi);
 }
 
 void EnableDpiAwarenessWhenAvailable() {
@@ -118,22 +124,22 @@ void EnableDpiAwarenessWhenAvailable() {
 
 HFONT CreateUiFont(HWND window, int pointSize, int weight) {
     HDC dc = GetDC(window);
-    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : kBaseDpi;
     if (dc) ReleaseDC(window, dc);
 
     const wchar_t* face = L"Arial";
     if (g_state.language == UI_CHINESE_SIMPLIFIED) face = L"Microsoft YaHei";
     if (g_state.language == UI_CHINESE_TRADITIONAL) face = L"Microsoft JhengHei";
-    return CreateFontW(-MulDiv(pointSize, dpi, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+    return CreateFontW(-MulDiv(pointSize, LayoutDpi(dpi), 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
 void InitializeFonts(HWND window) {
-    g_state.titleFont = CreateUiFont(window, 24, FW_BOLD);
-    g_state.subtitleFont = CreateUiFont(window, 16, FW_BOLD);
-    g_state.headingFont = CreateUiFont(window, 16, FW_BOLD);
-    g_state.bodyFont = CreateUiFont(window, 15, FW_BOLD);
+    g_state.titleFont = CreateUiFont(window, 21, FW_BOLD);
+    g_state.subtitleFont = CreateUiFont(window, 14, FW_BOLD);
+    g_state.headingFont = CreateUiFont(window, 14, FW_BOLD);
+    g_state.bodyFont = CreateUiFont(window, 13, FW_BOLD);
 }
 
 void DeleteFonts() {
@@ -267,33 +273,33 @@ void PaintWindow(HWND window) {
     ZeroMemory(pixelMemory, static_cast<SIZE_T>(width) * height * 4);
     HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memoryDc, bitmap));
 
-    HPEN outline = CreatePen(PS_SOLID, max(2, Scale(window, 3)), RGB(245, 245, 245));
+    HPEN outline = CreatePen(PS_SOLID, max(1, Scale(window, 2)), RGB(245, 245, 245));
     HBRUSH panel = CreateSolidBrush(RGB(61, 61, 61));
     HPEN oldPen = static_cast<HPEN>(SelectObject(memoryDc, outline));
     HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(memoryDc, panel));
     RoundRect(memoryDc, 1, 1, client.right - 1, client.bottom - 1,
-              Scale(window, 66), Scale(window, 66));
+              Scale(window, 50), Scale(window, 50));
     SelectObject(memoryDc, oldBrush);
     SelectObject(memoryDc, oldPen);
     DeleteObject(panel);
     DeleteObject(outline);
 
     const COLORREF white = RGB(250, 250, 250);
-    const int left = Scale(window, 44);
-    DrawTextLine(memoryDc, g_state.titleFont, kWindowTitle, left, Scale(window, 46), white);
-    RECT subtitleBounds = { left, Scale(window, 96), client.right - Scale(window, 40),
-                            Scale(window, 154) };
+    const int left = Scale(window, 38);
+    DrawTextLine(memoryDc, g_state.titleFont, kWindowTitle, left, Scale(window, 30), white);
+    RECT subtitleBounds = { left, Scale(window, 68), client.right - Scale(window, 36),
+                            Scale(window, 112) };
     DrawWrappedText(memoryDc, g_state.subtitleFont, g_state.text.subtitle, subtitleBounds, white);
-    DrawTextLine(memoryDc, g_state.headingFont, g_state.text.resources, left, Scale(window, 186), white);
+    DrawTextLine(memoryDc, g_state.headingFont, g_state.text.resources, left, Scale(window, 128), white);
 
     const int labelX = left;
-    const int barX = Scale(window, 180);
-    const int barWidth = Scale(window, 260);
-    const int valueX = Scale(window, 456);
-    const int barHeight = Scale(window, 27);
-    const int row1 = Scale(window, 230);
-    const int row2 = Scale(window, 276);
-    const int row3 = Scale(window, 322);
+    const int barX = Scale(window, 170);
+    const int barWidth = Scale(window, 280);
+    const int valueX = Scale(window, 470);
+    const int barHeight = Scale(window, 22);
+    const int row1 = Scale(window, 170);
+    const int row2 = Scale(window, 207);
+    const int row3 = Scale(window, 244);
 
     DrawTextLine(memoryDc, g_state.bodyFont, g_state.text.cpu, labelX, row1, white);
     DrawTextLine(memoryDc, g_state.bodyFont, g_state.text.ram, labelX, row2, white);
@@ -357,7 +363,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         SetTimer(window, kRefreshTimer, kRefreshMs, NULL);
         RECT client = {};
         GetClientRect(window, &client);
-        const int radius = Scale(window, 66);
+        const int radius = Scale(window, 50);
         SetWindowRgn(window, CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
                                                 radius, radius), TRUE);
         return 0;
@@ -405,8 +411,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     windowClass.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&windowClass)) return 1;
 
-    const int width = ScreenScale(620);
-    const int height = ScreenScale(390);
+    const int width = ScreenScale(650);
+    const int height = ScreenScale(300);
     const int margin = ScreenScale(24);
     RECT workArea = {};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
@@ -429,6 +435,9 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     }
     return static_cast<int>(message.wParam);
 }
+
+
+
 
 
 
