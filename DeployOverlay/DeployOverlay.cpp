@@ -441,7 +441,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     }
     case WM_NCHITTEST:
-        return HTCLIENT;
+        return HTTRANSPARENT;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         return 0;
@@ -477,7 +477,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     const int width = ScreenScale(650);
     const int height = ScreenScale(300);
     const POINT fixedPosition = FixedWindowPosition();
-    HWND window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
+    HWND window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
         kWindowClass, kWindowTitle, WS_POPUP,
         fixedPosition.x, fixedPosition.y, width, height,
         NULL, NULL, instance, NULL);
