@@ -396,6 +396,17 @@ void PaintWindow(HWND window) {
     ReleaseDC(NULL, screenDc);
 }
 
+POINT FixedWindowPosition() {
+    RECT workArea = {};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
+        workArea.left = 0;
+        workArea.top = 0;
+    }
+    const int margin = ScreenScale(24);
+    POINT position = { workArea.left + margin, workArea.top + margin };
+    return position;
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
@@ -420,8 +431,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_PAINT:
         PaintWindow(window);
         return 0;
+    case WM_WINDOWPOSCHANGING: {
+        WINDOWPOS* windowPosition = reinterpret_cast<WINDOWPOS*>(lParam);
+        if (windowPosition && !(windowPosition->flags & SWP_NOMOVE)) {
+            const POINT fixedPosition = FixedWindowPosition();
+            windowPosition->x = fixedPosition.x;
+            windowPosition->y = fixedPosition.y;
+        }
+        return 0;
+    }
     case WM_NCHITTEST:
-        return HTCAPTION;
+        return HTCLIENT;
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) DestroyWindow(window);
         return 0;
@@ -456,15 +476,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
 
     const int width = ScreenScale(650);
     const int height = ScreenScale(300);
-    const int margin = ScreenScale(24);
-    RECT workArea = {};
-    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
-        workArea.left = 0;
-        workArea.top = 0;
-    }
+    const POINT fixedPosition = FixedWindowPosition();
     HWND window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE,
         kWindowClass, kWindowTitle, WS_POPUP,
-        workArea.left + margin, workArea.top + margin, width, height,
+        fixedPosition.x, fixedPosition.y, width, height,
         NULL, NULL, instance, NULL);
     if (!window) return 2;
 
