@@ -2,5 +2,8 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup><Filter Include="Source Files"><UniqueIdentifier>{B0CB95C0-55F5-44E6-A2D5-2E260C8E9020}</UniqueIdentifier><Extensions>cpp;c</Extensions></Filter></ItemGroup>
   <ItemGroup><ClCompile Include="DeployOverlay.cpp"><Filter>Source Files</Filter></ClCompile></ItemGroup>
+  <ItemGroup><Filter Include="Resource Files"><UniqueIdentifier>{9A56A5A2-1C7B-4CCF-90EA-E6A58882C454}</UniqueIdentifier><Extensions>rc;ico;cur;bmp;dlg</Extensions></Filter></ItemGroup>
+  <ItemGroup><ClInclude Include="resource.h"><Filter>Resource Files</Filter></ClInclude><ResourceCompile Include="DeployOverlay.rc"><Filter>Resource Files</Filter></ResourceCompile></ItemGroup>
 </Project>
+
 

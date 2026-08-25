@@ -36,7 +36,7 @@
   <PropertyGroup>
     <OutDir>$(ProjectDir)bin\$(Configuration)\$(Platform)\</OutDir>
     <IntDir>$(ProjectDir)obj\$(Configuration)\$(Platform)\</IntDir>
-    <TargetName>DeployOverlay</TargetName>
+    <TargetName>KDO</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile><WarningLevel>Level4</WarningLevel><Optimization>MaxSpeed</Optimization><FunctionLevelLinking>true</FunctionLevelLinking><IntrinsicFunctions>true</IntrinsicFunctions><SDLCheck>true</SDLCheck><PreprocessorDefinitions>NDEBUG;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions><RuntimeLibrary>MultiThreaded</RuntimeLibrary><LanguageStandard>stdcpp14</LanguageStandard><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
@@ -49,8 +49,11 @@
     <Manifest><EnableSegmentHeap>false</EnableSegmentHeap></Manifest>
   </ItemDefinitionGroup>
   <ItemGroup><ClCompile Include="DeployOverlay.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="resource.h" /></ItemGroup>
+  <ItemGroup><ResourceCompile Include="DeployOverlay.rc" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
+
 
 

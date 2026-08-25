@@ -10,7 +10,7 @@
 <RunSynchronousCommand wcm:action="add">
   <Order>1</Order>
   <Description>Overlay</Description>
-  <Path>cmd /c start "" "<PATH>\DeployOverlay.exe"</Path>
+  <Path>cmd /c start "" "<PATH>\KDO.exe"</Path>
 </RunSynchronousCommand>
 ```
 
