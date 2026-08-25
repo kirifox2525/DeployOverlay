@@ -1,15 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  DeployOverlay unattended setup example for Windows Vista and later.
-
-  Before deployment, place the matching KDO.exe at:
-    Installation media: sources\$OEM$\$$\Setup\Scripts\KDO.exe
-    Applied Windows image: C:\Windows\Setup\Scripts\KDO.exe
-
-  The specialize pass starts KDO.exe without waiting for it to exit.
-  The first-logon command closes the overlay after deployment completes.
-  Windows XP uses Sysprep.inf rather than this unattend.xml schema.
--->
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="specialize">
     <component name="Microsoft-Windows-Deployment"
