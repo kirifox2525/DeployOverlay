@@ -57,5 +57,6 @@ Desktop.ini
 *.orig
 *~
 
-# Keep project audit artifacts under artifacts/ tracked intentionally.
-artifacts/
+# Local audit artifacts and maintenance helpers
+/artifacts/
+/scripts/maintenance/
