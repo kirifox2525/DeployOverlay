@@ -18,6 +18,10 @@ const UINT_PTR kRefreshTimer = 1;
 const UINT kRefreshMs = 1000;
 const int kBaseDpi = 96;
 const int kLayoutPercent = 75;   // Reduce the original design uniformly; DPI scaling remains enabled.
+const int kReferenceScreenWidth = 1024;
+const int kReferenceScreenHeight = 768;
+const int kScalePermille = 1000;
+int g_resolutionScalePermille = kScalePermille;
 
 struct Texts {
     const wchar_t* subtitle;
@@ -95,8 +99,23 @@ Texts GetTexts(UiLanguage language) {
     return english;
 }
 
+constexpr int ResolutionScalePermille(int width, int height) {
+    return (width <= 0 || height <= 0 ||
+            (width >= kReferenceScreenWidth && height >= kReferenceScreenHeight))
+        ? kScalePermille
+        : ((width * kScalePermille / kReferenceScreenWidth) <
+           (height * kScalePermille / kReferenceScreenHeight)
+            ? (width * kScalePermille / kReferenceScreenWidth)
+            : (height * kScalePermille / kReferenceScreenHeight));
+}
+
+static_assert(ResolutionScalePermille(1024, 768) == 1000, "Reference resolution must not shrink");
+static_assert(ResolutionScalePermille(800, 600) == 781, "800x600 scale regression");
+static_assert(ResolutionScalePermille(640, 400) == 520, "640x400 scale regression");
+
 int LayoutDpi(int dpi) {
-    return MulDiv(dpi, kLayoutPercent, 100);
+    const int baseLayoutDpi = MulDiv(dpi, kLayoutPercent, 100);
+    return MulDiv(baseLayoutDpi, g_resolutionScalePermille, kScalePermille);
 }
 
 int Scale(HWND window, int value) {
@@ -397,6 +416,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     EnableDpiAwarenessWhenAvailable();
+    g_resolutionScalePermille = ResolutionScalePermille(
+        GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     g_state.language = ResolveUiLanguage(commandLine);
     g_state.text = GetTexts(g_state.language);
     DetermineSystemDrive();
@@ -435,6 +456,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     }
     return static_cast<int>(message.wParam);
 }
+
 
 
 
