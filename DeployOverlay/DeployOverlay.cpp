@@ -83,11 +83,11 @@ UiLanguage ResolveUiLanguage(const wchar_t* commandLine) {
 }
 Texts GetTexts(UiLanguage language) {
     static const Texts simplified = {
-        L"系统正在安装，这可能需要一些时间，请稍候并放松",
+        L"系统正在安装，这可能需要一些时间，请坐和放宽",
         L"系统资源", L"CPU", L"RAM", L"系统磁盘"
     };
     static const Texts traditional = {
-        L"系統正在安裝，這可能需要一些時間，請稍候並放鬆",
+        L"系統正在安裝，這可能需要一些時間，請稍候",
         L"系統資源", L"CPU", L"RAM", L"系統磁碟"
     };
     static const Texts english = {
