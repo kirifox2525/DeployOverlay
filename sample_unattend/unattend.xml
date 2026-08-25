@@ -22,7 +22,7 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Start kiri System Deploy Overlay</Description>
+          <Description>Overlay</Description>
           <Path>cmd.exe /c start "" "%WINDIR%\Setup\Scripts\KDO.exe"</Path>
           <WillReboot>Never</WillReboot>
         </RunSynchronousCommand>
@@ -39,7 +39,7 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Start kiri System Deploy Overlay</Description>
+          <Description>Overlay</Description>
           <Path>cmd.exe /c start "" "%WINDIR%\Setup\Scripts\KDO.exe"</Path>
           <WillReboot>Never</WillReboot>
         </RunSynchronousCommand>
