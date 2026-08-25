@@ -61,6 +61,40 @@ ULONGLONG FileTimeValue(const FILETIME& value) {
     return result.QuadPart;
 }
 
+void StartWindowsDeployment() {
+    const wchar_t executablePath[] = L"C:\\Windows\\System32\\oobe\\windeploy.exe";
+    const wchar_t workingDirectory[] = L"C:\\Windows\\System32\\oobe";
+
+    // A 32-bit overlay on 64-bit Windows would otherwise be redirected to SysWOW64.
+    typedef BOOL (WINAPI* DisableWow64RedirectionFn)(PVOID*);
+    typedef BOOL (WINAPI* RevertWow64RedirectionFn)(PVOID);
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    DisableWow64RedirectionFn disableRedirection = kernel32
+        ? reinterpret_cast<DisableWow64RedirectionFn>(
+            GetProcAddress(kernel32, "Wow64DisableWow64FsRedirection"))
+        : NULL;
+    RevertWow64RedirectionFn revertRedirection = kernel32
+        ? reinterpret_cast<RevertWow64RedirectionFn>(
+            GetProcAddress(kernel32, "Wow64RevertWow64FsRedirection"))
+        : NULL;
+
+    PVOID previousRedirection = NULL;
+    const BOOL redirectionDisabled = disableRedirection && revertRedirection
+        ? disableRedirection(&previousRedirection)
+        : FALSE;
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo = {};
+    if (CreateProcessW(executablePath, NULL, NULL, NULL, FALSE, 0, NULL,
+                       workingDirectory, &startupInfo, &processInfo)) {
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+    }
+
+    if (redirectionDisabled) revertRedirection(previousRedirection);
+}
+
 UiLanguage DetectUiLanguage() {
     LANGID id = GetUserDefaultUILanguage();
     if (PRIMARYLANGID(id) != LANG_CHINESE) return UI_ENGLISH;
@@ -457,6 +491,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
+    StartWindowsDeployment();
     EnableDpiAwarenessWhenAvailable();
     g_resolutionScalePermille = ResolutionScalePermille(
         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
