@@ -6,6 +6,7 @@
 #endif
 
 #include <windows.h>
+#include <winioctl.h>
 #include <tchar.h>
 #include <math.h>
 #include <stdio.h>
@@ -30,6 +31,8 @@ const int kMainHeight = 300;
 const int kWarningWidth = 650;
 const int kWarningHeight = 130;
 const int kOverlayGap = 16;
+const int kMainContentPadding = 36;
+const int kWarningContentPadding = 24;
 int g_resolutionScalePermille = kScalePermille;
 
 struct Texts {
@@ -62,7 +65,11 @@ struct AppState {
     double ramUsedGb;
     double ramTotalGb;
     double diskPercent;
-    wchar_t systemDrive[4];
+    wchar_t systemVolumeRoot[MAX_PATH];
+    HANDLE systemDisk;
+    LONGLONG previousDiskIdleTime;
+    LONGLONG previousDiskQueryTime;
+    bool hasDiskSample;
 };
 
 AppState g_state = {};
@@ -323,18 +330,84 @@ void DeleteFonts() {
     DeleteObject(g_state.warningBodyFont);
 }
 
-void DetermineSystemDrive() {
+void DetermineSystemVolumeRoot() {
     wchar_t windowsPath[MAX_PATH] = {};
-    if (GetWindowsDirectoryW(windowsPath, MAX_PATH) >= 3) {
-        g_state.systemDrive[0] = windowsPath[0];
-        g_state.systemDrive[1] = L':';
-        g_state.systemDrive[2] = L'\\';
-        g_state.systemDrive[3] = L'\0';
+    const UINT length = GetWindowsDirectoryW(windowsPath, _countof(windowsPath));
+    if (length != 0 && length < _countof(windowsPath) &&
+        GetVolumePathNameW(windowsPath, g_state.systemVolumeRoot,
+                           _countof(g_state.systemVolumeRoot))) {
+        return;
+    }
+
+    wchar_t systemDrive[MAX_PATH] = {};
+    const DWORD driveLength = GetEnvironmentVariableW(
+        L"SystemDrive", systemDrive, _countof(systemDrive));
+    if (driveLength >= 2 && driveLength < _countof(systemDrive)) {
+        wsprintfW(g_state.systemVolumeRoot, L"%c:\\", systemDrive[0]);
     } else {
-        lstrcpyW(g_state.systemDrive, L"C:\\");
+        lstrcpyW(g_state.systemVolumeRoot, L"C:\\");
     }
 }
 
+void OpenSystemPhysicalDisk() {
+    g_state.systemDisk = INVALID_HANDLE_VALUE;
+    if (g_state.systemVolumeRoot[0] == L'\0') return;
+
+    wchar_t volumeDevice[] = L"\\\\.\\C:";
+    volumeDevice[4] = g_state.systemVolumeRoot[0];
+    HANDLE volume = CreateFileW(volumeDevice, 0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL, OPEN_EXISTING, 0, NULL);
+    if (volume == INVALID_HANDLE_VALUE) return;
+
+    STORAGE_DEVICE_NUMBER deviceNumber = {};
+    DWORD returned = 0;
+    const BOOL found = DeviceIoControl(volume, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                                       NULL, 0, &deviceNumber, sizeof(deviceNumber),
+                                       &returned, NULL);
+    CloseHandle(volume);
+    if (!found || deviceNumber.DeviceType != FILE_DEVICE_DISK) return;
+
+    wchar_t physicalPath[64] = {};
+    wsprintfW(physicalPath, L"\\\\.\\PhysicalDrive%lu", deviceNumber.DeviceNumber);
+    g_state.systemDisk = CreateFileW(physicalPath, 0,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                    NULL, OPEN_EXISTING, 0, NULL);
+}
+
+void UpdateSystemDiskActivity() {
+    if (!g_state.systemDisk || g_state.systemDisk == INVALID_HANDLE_VALUE) {
+        g_state.diskPercent = 0.0;
+        return;
+    }
+
+    DISK_PERFORMANCE performance = {};
+    DWORD returned = 0;
+    if (!DeviceIoControl(g_state.systemDisk, IOCTL_DISK_PERFORMANCE,
+                         NULL, 0, &performance, sizeof(performance),
+                         &returned, NULL)) {
+        g_state.diskPercent = 0.0;
+        g_state.hasDiskSample = false;
+        return;
+    }
+
+    const LONGLONG idleTime = performance.IdleTime.QuadPart;
+    const LONGLONG queryTime = performance.QueryTime.QuadPart;
+    if (g_state.hasDiskSample) {
+        const LONGLONG queryDelta = queryTime - g_state.previousDiskQueryTime;
+        const LONGLONG idleDelta = idleTime - g_state.previousDiskIdleTime;
+        if (queryDelta > 0) {
+            g_state.diskPercent =
+                100.0 * (1.0 - static_cast<double>(idleDelta) /
+                               static_cast<double>(queryDelta));
+            if (g_state.diskPercent < 0.0) g_state.diskPercent = 0.0;
+            if (g_state.diskPercent > 100.0) g_state.diskPercent = 100.0;
+        }
+    }
+    g_state.previousDiskIdleTime = idleTime;
+    g_state.previousDiskQueryTime = queryTime;
+    g_state.hasDiskSample = true;
+}
 void UpdateMetrics() {
     FILETIME idle = {}, kernel = {}, user = {};
     if (GetSystemTimes(&idle, &kernel, &user)) {
@@ -369,13 +442,8 @@ void UpdateMetrics() {
         g_state.ramTotalGb = static_cast<double>(memory.ullTotalPhys) / bytesPerGb;
     }
 
-    ULARGE_INTEGER available = {}, total = {}, freeBytes = {};
-    if (GetDiskFreeSpaceExW(g_state.systemDrive, &available, &total, &freeBytes) &&
-        total.QuadPart != 0) {
-        const ULONGLONG used = total.QuadPart - freeBytes.QuadPart;
-        g_state.diskPercent = 100.0 * static_cast<double>(used) /
-                                     static_cast<double>(total.QuadPart);
-    }
+    UpdateSystemDiskActivity();
+
 }
 
 void DrawTextLine(HDC dc, HFONT font, const wchar_t* text, int x, int y, COLORREF color) {
@@ -475,21 +543,37 @@ void PaintWindow(HWND window) {
     DeleteObject(outline);
 
     const COLORREF white = RGB(250, 250, 250);
-    const int left = Scale(window, 38);
-    DrawTextLine(memoryDc, g_state.titleFont, kWindowTitle, left, Scale(window, 30), white);
-    RECT subtitleBounds = { left, Scale(window, 68), client.right - Scale(window, 36),
-                            Scale(window, 112) };
+    const int contentPadding = Scale(window, kMainContentPadding);
+    const int left = contentPadding;
+
+    HFONT oldMeasureFont = static_cast<HFONT>(
+        SelectObject(memoryDc, g_state.titleFont));
+    TEXTMETRICW mainTitleMetrics = {};
+    GetTextMetricsW(memoryDc, &mainTitleMetrics);
+    SelectObject(memoryDc, oldMeasureFont);
+    const int nominalContentBottom = Scale(window, 242 + 22);
+    const int nominalVisibleTop =
+        contentPadding + max(0, mainTitleMetrics.tmInternalLeading);
+    const int verticalOffset =
+        (client.bottom - nominalContentBottom - nominalVisibleTop) / 2;
+
+    DrawTextLine(memoryDc, g_state.titleFont, kWindowTitle,
+                 left, contentPadding + verticalOffset, white);
+    RECT subtitleBounds = { left, Scale(window, 74) + verticalOffset,
+                            client.right - contentPadding,
+                            Scale(window, 112) + verticalOffset };
     DrawWrappedText(memoryDc, g_state.subtitleFont, g_state.text.subtitle, subtitleBounds, white);
-    DrawTextLine(memoryDc, g_state.headingFont, g_state.text.resources, left, Scale(window, 128), white);
+    DrawTextLine(memoryDc, g_state.headingFont, g_state.text.resources,
+                 left, Scale(window, 128) + verticalOffset, white);
 
     const int labelX = left;
     const int barX = Scale(window, 170);
     const int barWidth = Scale(window, 280);
     const int valueX = Scale(window, 470);
     const int barHeight = Scale(window, 22);
-    const int row1 = Scale(window, 168);
-    const int row2 = Scale(window, 205);
-    const int row3 = Scale(window, 242);
+    const int row1 = Scale(window, 168) + verticalOffset;
+    const int row2 = Scale(window, 205) + verticalOffset;
+    const int row3 = Scale(window, 242) + verticalOffset;
 
     DrawTextVerticallyCentered(memoryDc, g_state.bodyFont, g_state.text.cpu,
                                labelX, row1, barHeight, white);
@@ -593,13 +677,34 @@ void PaintWarningWindow(HWND window) {
     DeleteObject(panel);
     DeleteObject(outline);
 
-    const int left = Scale(window, 38);
+    const int contentPadding = Scale(window, kWarningContentPadding);
+    const int left = contentPadding;
+    const int textWidth = client.right - contentPadding * 2;
+    const int textGap = Scale(window, 10);
+
+    HFONT oldMeasureFont = static_cast<HFONT>(
+        SelectObject(memoryDc, g_state.warningTitleFont));
+    TEXTMETRICW titleMetrics = {};
+    GetTextMetricsW(memoryDc, &titleMetrics);
+
+    SelectObject(memoryDc, g_state.warningBodyFont);
+    RECT measuredBody = { 0, 0, textWidth, 0 };
+    DrawTextW(memoryDc, kWarningBodyText, -1, &measuredBody,
+              DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+    SelectObject(memoryDc, oldMeasureFont);
+
+    const int titleHeight = titleMetrics.tmHeight;
+    const int bodyHeight = measuredBody.bottom - measuredBody.top;
+    const int blockHeight = titleHeight + textGap + bodyHeight;
+    const int blockTop = max(contentPadding, (client.bottom - blockHeight) / 2);
+
     const COLORREF warningRed = RGB(255, 74, 74);
     const COLORREF warningOrange = RGB(255, 177, 64);
     DrawTextLine(memoryDc, g_state.warningTitleFont, kWarningTitleText,
-                 left, Scale(window, 24), warningRed);
-    RECT bodyBounds = { left, Scale(window, 66), client.right - Scale(window, 36),
-                        client.bottom - Scale(window, 16) };
+                 left, blockTop, warningRed);
+    RECT bodyBounds = { left, blockTop + titleHeight + textGap,
+                        client.right - contentPadding,
+                        blockTop + blockHeight };
     DrawWrappedText(memoryDc, g_state.warningBodyFont, kWarningBodyText,
                     bodyBounds, warningOrange);
 
@@ -751,6 +856,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DestroyWindow(g_warningWindow);
             g_warningWindow = NULL;
         }
+        if (g_state.systemDisk && g_state.systemDisk != INVALID_HANDLE_VALUE) {
+            CloseHandle(g_state.systemDisk);
+            g_state.systemDisk = INVALID_HANDLE_VALUE;
+        }
         DeleteFonts();
         PostQuitMessage(0);
         return 0;
@@ -766,7 +875,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
     g_state.language = ResolveUiLanguage(commandLine);
     g_state.text = GetTexts(g_state.language);
-    DetermineSystemDrive();
+    DetermineSystemVolumeRoot();
+    OpenSystemPhysicalDisk();
 
     WNDCLASSEXW windowClass = {};
     windowClass.cbSize = sizeof(windowClass);
