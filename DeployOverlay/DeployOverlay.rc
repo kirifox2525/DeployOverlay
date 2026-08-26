@@ -3,7 +3,7 @@
 #include "resource.h"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,1
+ FILEVERSION 1,0,0,2
  PRODUCTVERSION 1,0,0,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
@@ -21,9 +21,9 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Kirifox Project\0"
             VALUE "FileDescription",  "kiri System Deploy Overlay\0"
-            VALUE "FileVersion",      "1.0.0.1\0"
+            VALUE "FileVersion",      "1.0.0.2\0"
             VALUE "InternalName",     "KDO\0"
-            VALUE "LegalCopyright",   "© Kirifox Project. All rights reserved.\0"
+            VALUE "LegalCopyright",   "ï¿½ Kirifox Project. All rights reserved.\0"
             VALUE "OriginalFilename", "KDO.exe\0"
             VALUE "ProductName",      "kiri System Project\0"
             VALUE "ProductVersion",   "1.0.0.0\0"

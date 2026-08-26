@@ -14,6 +14,9 @@ namespace {
 
 const wchar_t kWindowClass[] = L"KiriDeployOverlayWindow";
 const wchar_t kWindowTitle[] = L"kiri System Deploy";
+const wchar_t kWarningWindowTitle[] = L"kiri System Deploy Warning";
+const wchar_t kWarningTitleText[] = L"系统部署过程遭到篡改";
+const wchar_t kWarningBodyText[] = L"系统部署进程可能会出现未经预料的操作";
 const UINT_PTR kRefreshTimer = 1;
 const UINT kRefreshMs = 1000;
 const int kBaseDpi = 96;
@@ -21,6 +24,11 @@ const int kLayoutPercent = 75;   // Reduce the original design uniformly; DPI sc
 const int kReferenceScreenWidth = 1024;
 const int kReferenceScreenHeight = 768;
 const int kScalePermille = 1000;
+const int kMainWidth = 650;
+const int kMainHeight = 300;
+const int kWarningWidth = 650;
+const int kWarningHeight = 130;
+const int kOverlayGap = 16;
 int g_resolutionScalePermille = kScalePermille;
 
 struct Texts {
@@ -33,6 +41,8 @@ struct Texts {
 
 enum UiLanguage { UI_ENGLISH, UI_CHINESE_SIMPLIFIED, UI_CHINESE_TRADITIONAL };
 
+enum OverlayKind { OVERLAY_MAIN = 0, OVERLAY_WARNING = 1 };
+
 struct AppState {
     UiLanguage language;
     Texts text;
@@ -40,6 +50,8 @@ struct AppState {
     HFONT subtitleFont;
     HFONT headingFont;
     HFONT bodyFont;
+    HFONT warningTitleFont;
+    HFONT warningBodyFont;
     ULONGLONG previousIdle;
     ULONGLONG previousKernel;
     ULONGLONG previousUser;
@@ -53,12 +65,30 @@ struct AppState {
 };
 
 AppState g_state = {};
+HWND g_warningWindow = NULL;
 
 ULONGLONG FileTimeValue(const FILETIME& value) {
     ULARGE_INTEGER result;
     result.LowPart = value.dwLowDateTime;
     result.HighPart = value.dwHighDateTime;
     return result.QuadPart;
+}
+
+bool ReadModdedState(const wchar_t* iniPath) {
+    return GetPrivateProfileIntW(L"kDeploy.State", L"Modded", 0, iniPath) == 1;
+}
+
+bool IsDeploymentStateModded() {
+    wchar_t windowsDirectory[MAX_PATH] = {};
+    const UINT windowsLength = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+    const wchar_t stateSuffix[] = L"\\kiriDeploy\\state.ini";
+    if (windowsLength == 0 || windowsLength >= MAX_PATH ||
+        windowsLength + lstrlenW(stateSuffix) >= MAX_PATH) return false;
+
+    wchar_t statePath[MAX_PATH] = {};
+    lstrcpyW(statePath, windowsDirectory);
+    lstrcatW(statePath, stateSuffix);
+    return ReadModdedState(statePath);
 }
 
 UiLanguage DetectUiLanguage() {
@@ -154,11 +184,23 @@ HFONT CreateUiFont(HWND window, int pointSize, int weight) {
         DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
+HFONT CreateWarningFont(HWND window, int pointSize) {
+    HDC dc = GetDC(window);
+    const int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSY) : kBaseDpi;
+    if (dc) ReleaseDC(window, dc);
+    return CreateFontW(-MulDiv(pointSize, LayoutDpi(dpi), 72), 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+        L"Microsoft YaHei");
+}
+
 void InitializeFonts(HWND window) {
     g_state.titleFont = CreateUiFont(window, 21, FW_BOLD);
     g_state.subtitleFont = CreateUiFont(window, 14, FW_BOLD);
     g_state.headingFont = CreateUiFont(window, 14, FW_BOLD);
     g_state.bodyFont = CreateUiFont(window, 13, FW_BOLD);
+    g_state.warningTitleFont = CreateWarningFont(window, 18);
+    g_state.warningBodyFont = CreateWarningFont(window, 14);
 }
 
 void DeleteFonts() {
@@ -166,6 +208,8 @@ void DeleteFonts() {
     DeleteObject(g_state.subtitleFont);
     DeleteObject(g_state.headingFont);
     DeleteObject(g_state.bodyFont);
+    DeleteObject(g_state.warningTitleFont);
+    DeleteObject(g_state.warningBodyFont);
 }
 
 void DetermineSystemDrive() {
@@ -396,6 +440,92 @@ void PaintWindow(HWND window) {
     ReleaseDC(NULL, screenDc);
 }
 
+void PaintWarningWindow(HWND window) {
+    PAINTSTRUCT paint = {};
+    BeginPaint(window, &paint);
+    EndPaint(window, &paint);
+
+    RECT client = {};
+    GetClientRect(window, &client);
+    const int width = client.right;
+    const int height = client.bottom;
+    HDC screenDc = GetDC(NULL);
+    HDC memoryDc = CreateCompatibleDC(screenDc);
+
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* pixelMemory = NULL;
+    HBITMAP bitmap = CreateDIBSection(screenDc, &info, DIB_RGB_COLORS,
+                                      &pixelMemory, NULL, 0);
+    if (!bitmap || !pixelMemory) {
+        if (bitmap) DeleteObject(bitmap);
+        DeleteDC(memoryDc);
+        ReleaseDC(NULL, screenDc);
+        return;
+    }
+    ZeroMemory(pixelMemory, static_cast<SIZE_T>(width) * height * 4);
+    HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(memoryDc, bitmap));
+
+    HPEN outline = CreatePen(PS_SOLID, max(1, Scale(window, 2)), RGB(245, 245, 245));
+    HBRUSH panel = CreateSolidBrush(RGB(61, 61, 61));
+    HPEN oldPen = static_cast<HPEN>(SelectObject(memoryDc, outline));
+    HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(memoryDc, panel));
+    RoundRect(memoryDc, 1, 1, client.right - 1, client.bottom - 1,
+              Scale(window, 34), Scale(window, 34));
+    SelectObject(memoryDc, oldBrush);
+    SelectObject(memoryDc, oldPen);
+    DeleteObject(panel);
+    DeleteObject(outline);
+
+    const int left = Scale(window, 38);
+    const COLORREF warningRed = RGB(255, 74, 74);
+    const COLORREF warningOrange = RGB(255, 177, 64);
+    DrawTextLine(memoryDc, g_state.warningTitleFont, kWarningTitleText,
+                 left, Scale(window, 24), warningRed);
+    RECT bodyBounds = { left, Scale(window, 66), client.right - Scale(window, 36),
+                        client.bottom - Scale(window, 16) };
+    DrawWrappedText(memoryDc, g_state.warningBodyFont, kWarningBodyText,
+                    bodyBounds, warningOrange);
+
+    const BYTE panelAlpha = 190;
+    BYTE* pixels = static_cast<BYTE*>(pixelMemory);
+    const SIZE_T pixelCount = static_cast<SIZE_T>(width) * height;
+    for (SIZE_T i = 0; i < pixelCount; ++i) {
+        BYTE* pixel = pixels + i * 4;
+        const BYTE blue = pixel[0];
+        const BYTE green = pixel[1];
+        const BYTE red = pixel[2];
+        if (red == 0 && green == 0 && blue == 0) {
+            pixel[3] = 0;
+        } else if (red < 100 && green < 100 && blue < 100) {
+            pixel[0] = static_cast<BYTE>(blue * panelAlpha / 255);
+            pixel[1] = static_cast<BYTE>(green * panelAlpha / 255);
+            pixel[2] = static_cast<BYTE>(red * panelAlpha / 255);
+            pixel[3] = panelAlpha;
+        } else {
+            pixel[3] = 255;
+        }
+    }
+
+    RECT windowRect = {};
+    GetWindowRect(window, &windowRect);
+    POINT destination = { windowRect.left, windowRect.top };
+    POINT source = { 0, 0 };
+    SIZE size = { width, height };
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    UpdateLayeredWindow(window, screenDc, &destination, &size, memoryDc,
+                        &source, 0, &blend, ULW_ALPHA);
+
+    SelectObject(memoryDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memoryDc);
+    ReleaseDC(NULL, screenDc);
+}
 POINT FixedWindowPosition() {
     RECT workArea = {};
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
@@ -406,22 +536,41 @@ POINT FixedWindowPosition() {
     POINT position = { workArea.left + margin, workArea.top + margin };
     return position;
 }
+POINT FixedWarningWindowPosition() {
+    const POINT mainPosition = FixedWindowPosition();
+    POINT position = { mainPosition.x,
+                       mainPosition.y + ScreenScale(kMainHeight + kOverlayGap) };
+    return position;
+}
+
+OverlayKind GetOverlayKind(HWND window) {
+    return static_cast<OverlayKind>(GetWindowLongPtrW(window, GWLP_USERDATA));
+}
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_NCCREATE: {
+        CREATESTRUCTW* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(window, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
     case WM_CREATE: {
-        InitializeFonts(window);
-        UpdateMetrics();
-        SetTimer(window, kRefreshTimer, kRefreshMs, NULL);
+        const OverlayKind kind = GetOverlayKind(window);
+        if (kind == OVERLAY_MAIN) {
+            InitializeFonts(window);
+            UpdateMetrics();
+            SetTimer(window, kRefreshTimer, kRefreshMs, NULL);
+        }
         RECT client = {};
         GetClientRect(window, &client);
-        const int radius = Scale(window, 50);
+        const int radius = Scale(window, kind == OVERLAY_WARNING ? 34 : 50);
         SetWindowRgn(window, CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
                                                 radius, radius), TRUE);
         return 0;
     }
     case WM_TIMER:
-        if (wParam == kRefreshTimer) {
+        if (GetOverlayKind(window) == OVERLAY_MAIN && wParam == kRefreshTimer) {
             UpdateMetrics();
             InvalidateRect(window, NULL, FALSE);
         }
@@ -429,12 +578,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT:
-        PaintWindow(window);
+        if (GetOverlayKind(window) == OVERLAY_WARNING)
+            PaintWarningWindow(window);
+        else
+            PaintWindow(window);
         return 0;
     case WM_WINDOWPOSCHANGING: {
         WINDOWPOS* windowPosition = reinterpret_cast<WINDOWPOS*>(lParam);
         if (windowPosition && !(windowPosition->flags & SWP_NOMOVE)) {
-            const POINT fixedPosition = FixedWindowPosition();
+            const POINT fixedPosition = GetOverlayKind(window) == OVERLAY_WARNING
+                ? FixedWarningWindowPosition()
+                : FixedWindowPosition();
             windowPosition->x = fixedPosition.x;
             windowPosition->y = fixedPosition.y;
         }
@@ -443,10 +597,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     case WM_NCHITTEST:
         return HTTRANSPARENT;
     case WM_KEYDOWN:
-        if (wParam == VK_ESCAPE) DestroyWindow(window);
+        if (GetOverlayKind(window) == OVERLAY_MAIN && wParam == VK_ESCAPE)
+            DestroyWindow(window);
         return 0;
     case WM_DESTROY:
+        if (GetOverlayKind(window) == OVERLAY_WARNING) {
+            if (g_warningWindow == window) g_warningWindow = NULL;
+            return 0;
+        }
         KillTimer(window, kRefreshTimer);
+        if (g_warningWindow && IsWindow(g_warningWindow)) {
+            DestroyWindow(g_warningWindow);
+            g_warningWindow = NULL;
+        }
         DeleteFonts();
         PostQuitMessage(0);
         return 0;
@@ -460,6 +623,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     EnableDpiAwarenessWhenAvailable();
     g_resolutionScalePermille = ResolutionScalePermille(
         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    const bool showWarningOverlay = IsDeploymentStateModded();
     g_state.language = ResolveUiLanguage(commandLine);
     g_state.text = GetTexts(g_state.language);
     DetermineSystemDrive();
@@ -474,17 +638,37 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     windowClass.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&windowClass)) return 1;
 
-    const int width = ScreenScale(650);
-    const int height = ScreenScale(300);
+    const DWORD overlayExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
+                                 WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+    const int width = ScreenScale(kMainWidth);
+    const int height = ScreenScale(kMainHeight);
     const POINT fixedPosition = FixedWindowPosition();
-    HWND window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
-        kWindowClass, kWindowTitle, WS_POPUP,
+    HWND window = CreateWindowExW(overlayExStyle, kWindowClass, kWindowTitle, WS_POPUP,
         fixedPosition.x, fixedPosition.y, width, height,
-        NULL, NULL, instance, NULL);
+        NULL, NULL, instance,
+        reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_MAIN)));
     if (!window) return 2;
+
+    if (showWarningOverlay) {
+        const POINT warningPosition = FixedWarningWindowPosition();
+        g_warningWindow = CreateWindowExW(overlayExStyle, kWindowClass,
+            kWarningWindowTitle, WS_POPUP,
+            warningPosition.x, warningPosition.y,
+            ScreenScale(kWarningWidth), ScreenScale(kWarningHeight),
+            NULL, NULL, instance,
+            reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_WARNING)));
+        if (!g_warningWindow) {
+            DestroyWindow(window);
+            return 3;
+        }
+    }
 
     ShowWindow(window, SW_SHOWNOACTIVATE);
     UpdateWindow(window);
+    if (g_warningWindow) {
+        ShowWindow(g_warningWindow, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_warningWindow);
+    }
 
     MSG message = {};
     while (GetMessageW(&message, NULL, 0, 0) > 0) {
