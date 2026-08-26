@@ -1,4 +1,4 @@
-#ifndef WINVER
+﻿#ifndef WINVER
 #define WINVER 0x0501
 #endif
 #ifndef _WIN32_WINNT
@@ -9,6 +9,7 @@
 #include <tchar.h>
 #include <math.h>
 #include <stdio.h>
+#include <wchar.h>
 
 namespace {
 
@@ -74,8 +75,118 @@ ULONGLONG FileTimeValue(const FILETIME& value) {
     return result.QuadPart;
 }
 
+wchar_t* TrimIniText(wchar_t* text) {
+    while (*text == L' ' || *text == L'\t') ++text;
+    wchar_t* end = text + lstrlenW(text);
+    while (end > text && (end[-1] == L' ' || end[-1] == L'\t')) --end;
+    *end = L'\0';
+    return text;
+}
+
+bool ParseModdedStateText(wchar_t* text) {
+    bool inStateSection = false;
+    wchar_t* cursor = text;
+    while (*cursor) {
+        wchar_t* line = cursor;
+        while (*cursor && *cursor != L'\r' && *cursor != L'\n') ++cursor;
+        if (*cursor) {
+            *cursor++ = L'\0';
+            if (cursor[-1] == L'\r' && *cursor == L'\n') ++cursor;
+        }
+
+        line = TrimIniText(line);
+        if (*line == L'\0' || *line == L';' || *line == L'#') continue;
+        if (*line == L'[') {
+            wchar_t* close = wcschr(line + 1, L']');
+            if (!close) {
+                inStateSection = false;
+                continue;
+            }
+            *close = L'\0';
+            inStateSection = lstrcmpiW(TrimIniText(line + 1), L"kDeploy.State") == 0;
+            continue;
+        }
+        if (!inStateSection) continue;
+
+        wchar_t* equals = wcschr(line, L'=');
+        if (!equals) continue;
+        *equals = L'\0';
+        wchar_t* key = TrimIniText(line);
+        wchar_t* value = TrimIniText(equals + 1);
+        if (lstrcmpiW(key, L"Modded") == 0) return wcstol(value, NULL, 10) == 1;
+    }
+    return false;
+}
+
 bool ReadModdedState(const wchar_t* iniPath) {
-    return GetPrivateProfileIntW(L"kDeploy.State", L"Modded", 0, iniPath) == 1;
+    HANDLE file = CreateFileW(iniPath, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    const DWORD byteCount = GetFileSize(file, NULL);
+    if (byteCount == INVALID_FILE_SIZE || byteCount == 0 || byteCount > 65536) {
+        CloseHandle(file);
+        return false;
+    }
+
+    BYTE* bytes = static_cast<BYTE*>(HeapAlloc(GetProcessHeap(), 0, byteCount));
+    if (!bytes) {
+        CloseHandle(file);
+        return false;
+    }
+    DWORD bytesRead = 0;
+    const BOOL read = ReadFile(file, bytes, byteCount, &bytesRead, NULL);
+    CloseHandle(file);
+    if (!read || bytesRead == 0) {
+        HeapFree(GetProcessHeap(), 0, bytes);
+        return false;
+    }
+
+    wchar_t* decoded = NULL;
+    int characterCount = 0;
+    if (bytesRead >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+        characterCount = static_cast<int>((bytesRead - 2) / 2);
+        decoded = static_cast<wchar_t*>(HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY,
+            static_cast<SIZE_T>(characterCount + 1) * sizeof(wchar_t)));
+        if (decoded) CopyMemory(decoded, bytes + 2,
+                                static_cast<SIZE_T>(characterCount) * sizeof(wchar_t));
+    } else if (bytesRead >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+        characterCount = static_cast<int>((bytesRead - 2) / 2);
+        decoded = static_cast<wchar_t*>(HeapAlloc(
+            GetProcessHeap(), HEAP_ZERO_MEMORY,
+            static_cast<SIZE_T>(characterCount + 1) * sizeof(wchar_t)));
+        if (decoded) {
+            for (int i = 0; i < characterCount; ++i)
+                decoded[i] = static_cast<wchar_t>((bytes[2 + i * 2] << 8) |
+                                                   bytes[3 + i * 2]);
+        }
+    } else {
+        DWORD offset = 0;
+        UINT codePage = CP_ACP;
+        if (bytesRead >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) {
+            offset = 3;
+            codePage = CP_UTF8;
+        }
+        characterCount = MultiByteToWideChar(codePage, 0,
+            reinterpret_cast<const char*>(bytes + offset),
+            static_cast<int>(bytesRead - offset), NULL, 0);
+        if (characterCount > 0) {
+            decoded = static_cast<wchar_t*>(HeapAlloc(
+                GetProcessHeap(), HEAP_ZERO_MEMORY,
+                static_cast<SIZE_T>(characterCount + 1) * sizeof(wchar_t)));
+            if (decoded) MultiByteToWideChar(codePage, 0,
+                reinterpret_cast<const char*>(bytes + offset),
+                static_cast<int>(bytesRead - offset), decoded, characterCount);
+        }
+    }
+
+    HeapFree(GetProcessHeap(), 0, bytes);
+    if (!decoded) return false;
+    const bool result = ParseModdedStateText(decoded);
+    HeapFree(GetProcessHeap(), 0, decoded);
+    return result;
 }
 
 bool IsDeploymentStateModded() {
@@ -547,6 +658,35 @@ OverlayKind GetOverlayKind(HWND window) {
     return static_cast<OverlayKind>(GetWindowLongPtrW(window, GWLP_USERDATA));
 }
 
+DWORD OverlayExtendedStyle() {
+    return WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
+           WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+}
+
+void SyncWarningOverlay(HWND mainWindow) {
+    const bool shouldShow = IsDeploymentStateModded();
+    if (shouldShow && (!g_warningWindow || !IsWindow(g_warningWindow))) {
+        const POINT warningPosition = FixedWarningWindowPosition();
+        HINSTANCE instance = reinterpret_cast<HINSTANCE>(
+            GetWindowLongPtrW(mainWindow, GWLP_HINSTANCE));
+        g_warningWindow = CreateWindowExW(OverlayExtendedStyle(), kWindowClass,
+            kWarningWindowTitle, WS_POPUP,
+            warningPosition.x, warningPosition.y,
+            ScreenScale(kWarningWidth), ScreenScale(kWarningHeight),
+            NULL, NULL, instance,
+            reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_WARNING)));
+        if (g_warningWindow) {
+            ShowWindow(g_warningWindow, SW_SHOWNOACTIVATE);
+            // A newly shown per-pixel layered window can have no pending WM_PAINT on
+            // some systems. Render it explicitly so it never remains fully transparent.
+            PaintWarningWindow(g_warningWindow);
+        }
+    } else if (!shouldShow && g_warningWindow && IsWindow(g_warningWindow)) {
+        DestroyWindow(g_warningWindow);
+        g_warningWindow = NULL;
+    }
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_NCCREATE: {
@@ -573,6 +713,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (GetOverlayKind(window) == OVERLAY_MAIN && wParam == kRefreshTimer) {
             UpdateMetrics();
             InvalidateRect(window, NULL, FALSE);
+            SyncWarningOverlay(window);
         }
         return 0;
     case WM_ERASEBKGND:
@@ -623,7 +764,6 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     EnableDpiAwarenessWhenAvailable();
     g_resolutionScalePermille = ResolutionScalePermille(
         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-    const bool showWarningOverlay = IsDeploymentStateModded();
     g_state.language = ResolveUiLanguage(commandLine);
     g_state.text = GetTexts(g_state.language);
     DetermineSystemDrive();
@@ -638,8 +778,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
     windowClass.lpszClassName = kWindowClass;
     if (!RegisterClassExW(&windowClass)) return 1;
 
-    const DWORD overlayExStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
-                                 WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
+    const DWORD overlayExStyle = OverlayExtendedStyle();
     const int width = ScreenScale(kMainWidth);
     const int height = ScreenScale(kMainHeight);
     const POINT fixedPosition = FixedWindowPosition();
@@ -649,26 +788,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
         reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_MAIN)));
     if (!window) return 2;
 
-    if (showWarningOverlay) {
-        const POINT warningPosition = FixedWarningWindowPosition();
-        g_warningWindow = CreateWindowExW(overlayExStyle, kWindowClass,
-            kWarningWindowTitle, WS_POPUP,
-            warningPosition.x, warningPosition.y,
-            ScreenScale(kWarningWidth), ScreenScale(kWarningHeight),
-            NULL, NULL, instance,
-            reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_WARNING)));
-        if (!g_warningWindow) {
-            DestroyWindow(window);
-            return 3;
-        }
-    }
 
     ShowWindow(window, SW_SHOWNOACTIVATE);
     UpdateWindow(window);
-    if (g_warningWindow) {
-        ShowWindow(g_warningWindow, SW_SHOWNOACTIVATE);
-        UpdateWindow(g_warningWindow);
-    }
+    SyncWarningOverlay(window);
 
     MSG message = {};
     while (GetMessageW(&message, NULL, 0, 0) > 0) {
