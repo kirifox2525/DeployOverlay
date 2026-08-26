@@ -49,6 +49,8 @@ struct AppState {
     double ramUsedGb;
     double ramTotalGb;
     double diskPercent;
+    HANDLE deploymentProcess;
+    bool sysprepCleanupPending;
     wchar_t systemDrive[4];
 };
 
@@ -61,9 +63,66 @@ ULONGLONG FileTimeValue(const FILETIME& value) {
     return result.QuadPart;
 }
 
-void StartWindowsDeployment() {
-    const wchar_t executablePath[] = L"C:\\Windows\\System32\\oobe\\windeploy.exe";
-    const wchar_t workingDirectory[] = L"C:\\Windows\\System32\\oobe";
+constexpr bool UsesLegacyMiniSetup(DWORD majorVersion, DWORD minorVersion) {
+    return majorVersion == 5 && minorVersion >= 1;
+}
+
+static_assert(UsesLegacyMiniSetup(5, 1), "Windows XP must use setup.exe mini setup");
+static_assert(UsesLegacyMiniSetup(5, 2), "Windows Server 2003 must use setup.exe mini setup");
+static_assert(!UsesLegacyMiniSetup(6, 0), "Windows Vista must use WinDeploy.exe");
+static_assert(!UsesLegacyMiniSetup(10, 0), "Modern Windows must use WinDeploy.exe");
+
+HANDLE StartSystemDeployment() {
+    struct NativeVersionInfo {
+        ULONG size;
+        ULONG majorVersion;
+        ULONG minorVersion;
+        ULONG buildNumber;
+        ULONG platformId;
+        WCHAR servicePack[128];
+    };
+    typedef LONG (WINAPI* RtlGetVersionFn)(NativeVersionInfo*);
+
+    bool useLegacyMiniSetup = false;
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    RtlGetVersionFn rtlGetVersion = ntdll
+        ? reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"))
+        : NULL;
+    if (rtlGetVersion) {
+        NativeVersionInfo versionInfo = {};
+        versionInfo.size = sizeof(versionInfo);
+        if (rtlGetVersion(&versionInfo) >= 0) {
+            useLegacyMiniSetup = UsesLegacyMiniSetup(
+                versionInfo.majorVersion, versionInfo.minorVersion);
+        }
+    }
+
+    wchar_t windowsDirectory[MAX_PATH] = {};
+    const UINT windowsLength = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
+    if (windowsLength == 0 || windowsLength >= MAX_PATH) return NULL;
+
+    const wchar_t* executableSuffix = useLegacyMiniSetup
+        ? L"\\System32\\setup.exe"
+        : L"\\System32\\Oobe\\WinDeploy.exe";
+    const wchar_t* workingSuffix = useLegacyMiniSetup
+        ? L"\\System32"
+        : L"\\System32\\Oobe";
+    if (windowsLength + lstrlenW(executableSuffix) >= MAX_PATH ||
+        windowsLength + lstrlenW(workingSuffix) >= MAX_PATH) return NULL;
+
+    wchar_t executablePath[MAX_PATH] = {};
+    wchar_t workingDirectory[MAX_PATH] = {};
+    lstrcpyW(executablePath, windowsDirectory);
+    lstrcatW(executablePath, executableSuffix);
+    lstrcpyW(workingDirectory, windowsDirectory);
+    lstrcatW(workingDirectory, workingSuffix);
+
+    wchar_t commandLine[MAX_PATH + 64] = {};
+    if (useLegacyMiniSetup) {
+        wsprintfW(commandLine, L"\"%s\" -newsetup -mini", executablePath);
+    } else {
+        wsprintfW(commandLine, L"\"%s\"", executablePath);
+    }
 
     // A 32-bit overlay on 64-bit Windows would otherwise be redirected to SysWOW64.
     typedef BOOL (WINAPI* DisableWow64RedirectionFn)(PVOID*);
@@ -86,13 +145,89 @@ void StartWindowsDeployment() {
     STARTUPINFOW startupInfo = {};
     startupInfo.cb = sizeof(startupInfo);
     PROCESS_INFORMATION processInfo = {};
-    if (CreateProcessW(executablePath, NULL, NULL, NULL, FALSE, 0, NULL,
+    HANDLE processHandle = NULL;
+    if (CreateProcessW(executablePath, commandLine, NULL, NULL, FALSE, 0, NULL,
                        workingDirectory, &startupInfo, &processInfo)) {
         CloseHandle(processInfo.hThread);
-        CloseHandle(processInfo.hProcess);
+        processHandle = processInfo.hProcess;
     }
 
     if (redirectionDisabled) revertRedirection(previousRedirection);
+    return processHandle;
+}
+
+bool DeleteDirectoryTree(const wchar_t* directory) {
+    const DWORD rootAttributes = GetFileAttributesW(directory);
+    if (rootAttributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    }
+    if (!(rootAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    if (rootAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        SetFileAttributesW(directory, FILE_ATTRIBUTE_NORMAL);
+        return RemoveDirectoryW(directory) != FALSE;
+    }
+
+    wchar_t searchPath[MAX_PATH] = {};
+    const int directoryLength = lstrlenW(directory);
+    if (directoryLength + 2 >= MAX_PATH) return false;
+    lstrcpyW(searchPath, directory);
+    if (directoryLength > 0 && directory[directoryLength - 1] != L'\\')
+        lstrcatW(searchPath, L"\\");
+    lstrcatW(searchPath, L"*");
+
+    bool success = true;
+    WIN32_FIND_DATAW entry = {};
+    HANDLE findHandle = FindFirstFileW(searchPath, &entry);
+    if (findHandle != INVALID_HANDLE_VALUE) {
+        do {
+            if (lstrcmpW(entry.cFileName, L".") == 0 ||
+                lstrcmpW(entry.cFileName, L"..") == 0) continue;
+
+            wchar_t childPath[MAX_PATH] = {};
+            const int childLength = lstrlenW(entry.cFileName);
+            if (directoryLength + 1 + childLength >= MAX_PATH) {
+                success = false;
+                continue;
+            }
+            lstrcpyW(childPath, directory);
+            if (directoryLength > 0 && directory[directoryLength - 1] != L'\\')
+                lstrcatW(childPath, L"\\");
+            lstrcatW(childPath, entry.cFileName);
+
+            if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    SetFileAttributesW(childPath, FILE_ATTRIBUTE_NORMAL);
+                    if (!RemoveDirectoryW(childPath)) success = false;
+                } else if (!DeleteDirectoryTree(childPath)) {
+                    success = false;
+                }
+            } else {
+                SetFileAttributesW(childPath, FILE_ATTRIBUTE_NORMAL);
+                if (!DeleteFileW(childPath)) success = false;
+            }
+        } while (FindNextFileW(findHandle, &entry));
+        FindClose(findHandle);
+    } else {
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND) success = false;
+    }
+
+    SetFileAttributesW(directory, FILE_ATTRIBUTE_NORMAL);
+    if (!RemoveDirectoryW(directory)) success = false;
+    return success;
+}
+
+bool DeleteSystemSysprepDirectory() {
+    wchar_t systemDrive[4] = {};
+    const DWORD length = GetEnvironmentVariableW(L"SYSTEMDRIVE", systemDrive,
+                                                  _countof(systemDrive));
+    if (length != 2 || systemDrive[1] != L':') return false;
+
+    wchar_t sysprepPath[MAX_PATH] = {};
+    lstrcpyW(sysprepPath, systemDrive);
+    lstrcatW(sysprepPath, L"\\Sysprep");
+    return DeleteDirectoryTree(sysprepPath);
 }
 
 UiLanguage DetectUiLanguage() {
@@ -456,6 +591,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
     case WM_TIMER:
         if (wParam == kRefreshTimer) {
+            if (g_state.deploymentProcess &&
+                WaitForSingleObject(g_state.deploymentProcess, 0) == WAIT_OBJECT_0) {
+                CloseHandle(g_state.deploymentProcess);
+                g_state.deploymentProcess = NULL;
+                g_state.sysprepCleanupPending = true;
+            }
+            if (g_state.sysprepCleanupPending && DeleteSystemSysprepDirectory()) {
+                g_state.sysprepCleanupPending = false;
+                DestroyWindow(window);
+                return 0;
+            }
             UpdateMetrics();
             InvalidateRect(window, NULL, FALSE);
         }
@@ -481,6 +627,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         return 0;
     case WM_DESTROY:
         KillTimer(window, kRefreshTimer);
+        if (g_state.deploymentProcess) {
+            CloseHandle(g_state.deploymentProcess);
+            g_state.deploymentProcess = NULL;
+        }
         DeleteFonts();
         PostQuitMessage(0);
         return 0;
@@ -491,7 +641,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR commandLine, int) {
-    StartWindowsDeployment();
+    g_state.deploymentProcess = StartSystemDeployment();
     EnableDpiAwarenessWhenAvailable();
     g_resolutionScalePermille = ResolutionScalePermille(
         GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
