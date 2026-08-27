@@ -19,6 +19,12 @@ const wchar_t kWindowTitle[] = L"kiri System Deploy";
 const wchar_t kWarningWindowTitle[] = L"kiri System Deploy Warning";
 const wchar_t kWarningTitleText[] = L"系统部署过程遭到篡改";
 const wchar_t kWarningBodyText[] = L"系统部署进程可能会出现未经预料的操作";
+const wchar_t kCorrectedWarningTitleText[] = L"系统部署过程遭到篡改并已尝试修正";
+const wchar_t kCorrectedWarningBodyText[] =
+    L"修正操作已执行，但系统部署过程仍可能出现未经预料的操作";
+const wchar_t kCorrectionFailedWarningTitleText[] = L"系统部署过程遭到篡改";
+const wchar_t kCorrectionFailedWarningBodyText[] =
+    L"已尝试修正但操作失败，系统部署过程可能出现未经预料的操作";
 const UINT_PTR kRefreshTimer = 1;
 const UINT kRefreshMs = 1000;
 const int kBaseDpi = 96;
@@ -47,6 +53,13 @@ enum UiLanguage { UI_ENGLISH, UI_CHINESE_SIMPLIFIED, UI_CHINESE_TRADITIONAL };
 
 enum OverlayKind { OVERLAY_MAIN = 0, OVERLAY_WARNING = 1 };
 
+struct DeploymentState {
+    bool modded;
+    int corrected;
+
+    DeploymentState() : modded(false), corrected(0) {}
+};
+
 struct AppState {
     UiLanguage language;
     Texts text;
@@ -74,6 +87,7 @@ struct AppState {
 
 AppState g_state = {};
 HWND g_warningWindow = NULL;
+int g_warningCorrected = -1;
 
 ULONGLONG FileTimeValue(const FILETIME& value) {
     ULARGE_INTEGER result;
@@ -90,7 +104,8 @@ wchar_t* TrimIniText(wchar_t* text) {
     return text;
 }
 
-bool ParseModdedStateText(wchar_t* text) {
+DeploymentState ParseDeploymentStateText(wchar_t* text) {
+    DeploymentState state;
     bool inStateSection = false;
     wchar_t* cursor = text;
     while (*cursor) {
@@ -110,7 +125,8 @@ bool ParseModdedStateText(wchar_t* text) {
                 continue;
             }
             *close = L'\0';
-            inStateSection = lstrcmpiW(TrimIniText(line + 1), L"kDeploy.State") == 0;
+            inStateSection =
+                lstrcmpiW(TrimIniText(line + 1), L"kDeploy.State") == 0;
             continue;
         }
         if (!inStateSection) continue;
@@ -120,34 +136,41 @@ bool ParseModdedStateText(wchar_t* text) {
         *equals = L'\0';
         wchar_t* key = TrimIniText(line);
         wchar_t* value = TrimIniText(equals + 1);
-        if (lstrcmpiW(key, L"Modded") == 0) return wcstol(value, NULL, 10) == 1;
+        const long number = wcstol(value, NULL, 10);
+        if (lstrcmpiW(key, L"Modded") == 0) {
+            state.modded = number == 1;
+        } else if (lstrcmpiW(key, L"Corrected") == 0) {
+            state.corrected = number == 1 || number == 2
+                ? static_cast<int>(number) : 0;
+        }
     }
-    return false;
+    return state;
 }
 
-bool ReadModdedState(const wchar_t* iniPath) {
+DeploymentState ReadDeploymentStateFile(const wchar_t* iniPath) {
+    DeploymentState emptyState;
     HANDLE file = CreateFileW(iniPath, GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) return false;
+    if (file == INVALID_HANDLE_VALUE) return emptyState;
 
     const DWORD byteCount = GetFileSize(file, NULL);
     if (byteCount == INVALID_FILE_SIZE || byteCount == 0 || byteCount > 65536) {
         CloseHandle(file);
-        return false;
+        return emptyState;
     }
 
     BYTE* bytes = static_cast<BYTE*>(HeapAlloc(GetProcessHeap(), 0, byteCount));
     if (!bytes) {
         CloseHandle(file);
-        return false;
+        return emptyState;
     }
     DWORD bytesRead = 0;
     const BOOL read = ReadFile(file, bytes, byteCount, &bytesRead, NULL);
     CloseHandle(file);
     if (!read || bytesRead == 0) {
         HeapFree(GetProcessHeap(), 0, bytes);
-        return false;
+        return emptyState;
     }
 
     wchar_t* decoded = NULL;
@@ -172,7 +195,8 @@ bool ReadModdedState(const wchar_t* iniPath) {
     } else {
         DWORD offset = 0;
         UINT codePage = CP_ACP;
-        if (bytesRead >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) {
+        if (bytesRead >= 3 && bytes[0] == 0xEF &&
+            bytes[1] == 0xBB && bytes[2] == 0xBF) {
             offset = 3;
             codePage = CP_UTF8;
         }
@@ -190,25 +214,25 @@ bool ReadModdedState(const wchar_t* iniPath) {
     }
 
     HeapFree(GetProcessHeap(), 0, bytes);
-    if (!decoded) return false;
-    const bool result = ParseModdedStateText(decoded);
+    if (!decoded) return emptyState;
+    const DeploymentState result = ParseDeploymentStateText(decoded);
     HeapFree(GetProcessHeap(), 0, decoded);
     return result;
 }
 
-bool IsDeploymentStateModded() {
+DeploymentState ReadDeploymentState() {
+    DeploymentState emptyState;
     wchar_t windowsDirectory[MAX_PATH] = {};
     const UINT windowsLength = GetWindowsDirectoryW(windowsDirectory, MAX_PATH);
     const wchar_t stateSuffix[] = L"\\kiriDeploy\\state.ini";
     if (windowsLength == 0 || windowsLength >= MAX_PATH ||
-        windowsLength + lstrlenW(stateSuffix) >= MAX_PATH) return false;
+        windowsLength + lstrlenW(stateSuffix) >= MAX_PATH) return emptyState;
 
     wchar_t statePath[MAX_PATH] = {};
     lstrcpyW(statePath, windowsDirectory);
     lstrcatW(statePath, stateSuffix);
-    return ReadModdedState(statePath);
+    return ReadDeploymentStateFile(statePath);
 }
-
 UiLanguage DetectUiLanguage() {
     LANGID id = GetUserDefaultUILanguage();
     if (PRIMARYLANGID(id) != LANG_CHINESE) return UI_ENGLISH;
@@ -644,6 +668,15 @@ void PaintWarningWindow(HWND window) {
     GetClientRect(window, &client);
     const int width = client.right;
     const int height = client.bottom;
+    const wchar_t* warningTitle = kWarningTitleText;
+    const wchar_t* warningBody = kWarningBodyText;
+    if (g_warningCorrected == 1) {
+        warningTitle = kCorrectedWarningTitleText;
+        warningBody = kCorrectedWarningBodyText;
+    } else if (g_warningCorrected == 2) {
+        warningTitle = kCorrectionFailedWarningTitleText;
+        warningBody = kCorrectionFailedWarningBodyText;
+    }
     HDC screenDc = GetDC(NULL);
     HDC memoryDc = CreateCompatibleDC(screenDc);
 
@@ -689,7 +722,7 @@ void PaintWarningWindow(HWND window) {
 
     SelectObject(memoryDc, g_state.warningBodyFont);
     RECT measuredBody = { 0, 0, textWidth, 0 };
-    DrawTextW(memoryDc, kWarningBodyText, -1, &measuredBody,
+    DrawTextW(memoryDc, warningBody, -1, &measuredBody,
               DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
     SelectObject(memoryDc, oldMeasureFont);
 
@@ -700,12 +733,12 @@ void PaintWarningWindow(HWND window) {
 
     const COLORREF warningRed = RGB(255, 74, 74);
     const COLORREF warningOrange = RGB(255, 177, 64);
-    DrawTextLine(memoryDc, g_state.warningTitleFont, kWarningTitleText,
+    DrawTextLine(memoryDc, g_state.warningTitleFont, warningTitle,
                  left, blockTop, warningRed);
     RECT bodyBounds = { left, blockTop + titleHeight + textGap,
                         client.right - contentPadding,
                         blockTop + blockHeight };
-    DrawWrappedText(memoryDc, g_state.warningBodyFont, kWarningBodyText,
+    DrawWrappedText(memoryDc, g_state.warningBodyFont, warningBody,
                     bodyBounds, warningOrange);
 
     const BYTE panelAlpha = 190;
@@ -769,29 +802,34 @@ DWORD OverlayExtendedStyle() {
 }
 
 void SyncWarningOverlay(HWND mainWindow) {
-    const bool shouldShow = IsDeploymentStateModded();
-    if (shouldShow && (!g_warningWindow || !IsWindow(g_warningWindow))) {
-        const POINT warningPosition = FixedWarningWindowPosition();
-        HINSTANCE instance = reinterpret_cast<HINSTANCE>(
-            GetWindowLongPtrW(mainWindow, GWLP_HINSTANCE));
-        g_warningWindow = CreateWindowExW(OverlayExtendedStyle(), kWindowClass,
-            kWarningWindowTitle, WS_POPUP,
-            warningPosition.x, warningPosition.y,
-            ScreenScale(kWarningWidth), ScreenScale(kWarningHeight),
-            NULL, NULL, instance,
-            reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_WARNING)));
-        if (g_warningWindow) {
-            ShowWindow(g_warningWindow, SW_SHOWNOACTIVATE);
-            // A newly shown per-pixel layered window can have no pending WM_PAINT on
-            // some systems. Render it explicitly so it never remains fully transparent.
+    const DeploymentState deploymentState = ReadDeploymentState();
+    if (deploymentState.modded) {
+        const int corrected = deploymentState.corrected;
+        if (!g_warningWindow || !IsWindow(g_warningWindow)) {
+            g_warningCorrected = corrected;
+            const POINT warningPosition = FixedWarningWindowPosition();
+            HINSTANCE instance = reinterpret_cast<HINSTANCE>(
+                GetWindowLongPtrW(mainWindow, GWLP_HINSTANCE));
+            g_warningWindow = CreateWindowExW(OverlayExtendedStyle(), kWindowClass,
+                kWarningWindowTitle, WS_POPUP,
+                warningPosition.x, warningPosition.y,
+                ScreenScale(kWarningWidth), ScreenScale(kWarningHeight),
+                NULL, NULL, instance,
+                reinterpret_cast<LPVOID>(static_cast<INT_PTR>(OVERLAY_WARNING)));
+            if (g_warningWindow) {
+                ShowWindow(g_warningWindow, SW_SHOWNOACTIVATE);
+                PaintWarningWindow(g_warningWindow);
+            }
+        } else if (g_warningCorrected != corrected) {
+            g_warningCorrected = corrected;
             PaintWarningWindow(g_warningWindow);
         }
-    } else if (!shouldShow && g_warningWindow && IsWindow(g_warningWindow)) {
+    } else if (g_warningWindow && IsWindow(g_warningWindow)) {
         DestroyWindow(g_warningWindow);
         g_warningWindow = NULL;
+        g_warningCorrected = -1;
     }
 }
-
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_NCCREATE: {
